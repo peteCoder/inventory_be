@@ -29,6 +29,8 @@ from .helpers import (
 
 )
 
+from .permissions import IsUserVerified
+
 
 # Global User
 User = get_user_model()
@@ -231,7 +233,7 @@ def verify_user_retry_code(request):
 
 
 
-# USER PROFILE
+# GET AND UPDATE USER PROFILE
 @api_view(['GET', 'PUT'])
 @authentication_classes([TokenAuthentication])
 @permission_classes([IsAuthenticated])
@@ -254,6 +256,7 @@ def user_profile(request):
                     "is_superuser": user.is_superuser,
                     "is_manager": user.role == "manager",
                     "is_cashier": user.role == "cashier",
+                    "is_verified": user.is_verified,
                 }
             }
             return Response(user_profile_data, status=status.HTTP_200_OK)
@@ -273,10 +276,6 @@ def user_profile(request):
 
         # Handle the image upload to Cloudinary
         image = request.FILES.get('image', None)
-
-        # Check if role is either manager or cashier
-        # if role and role != "cashier" or role != "manager":
-        #     return Response({"detail": "role must be either cashier or manager"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             profile = Profile.objects.get(user=request.user)
@@ -310,7 +309,7 @@ def user_profile(request):
         return Response({"message": "Method not allowed."}, status=status.HTTP_405_METHOD_NOT_ALLOWED)
 
 
-
+# CHANGE LOGGED IN USER PASSWORD
 @api_view(['POST'])
 @authentication_classes([TokenAuthentication])
 @permission_classes([IsAuthenticated])
@@ -360,11 +359,104 @@ def change_user_password(request):
     return Response({"message": "Password was successfully updated."}, status=status.HTTP_200_OK)
 
 
-# Log user in
+# USER LOGOUT VIEW
 @api_view(['POST'])
-def login_user(request):
+def login_view(request):
     data = request.data
     email = data.get("email")
     password = data.get("password")
 
+    if not all([email, password]):
+        return Response({'detail': "User email and password are required."}, status=status.HTTP_400_BAD_REQUEST)
+    
+    email_valid_status = check_email(email)
+    password_valid_status = check_password(password)
+
+    if not email_valid_status.status:
+        return Response({"detail": " ".join(email_valid_status.error_messages)}, status=status.HTTP_400_BAD_REQUEST)
+
+    if not password_valid_status.status:
+        return Response({"detail": " ".join(password_valid_status.error_messages)}, status=status.HTTP_400_BAD_REQUEST)
+
     # Check if user with email exists
+    users = User.objects.filter(email=email)
+
+    user = users.first()
+
+    user_exists = users.exists()
+
+    if not user_exists:
+        return Response({"detail": "User with email does not exist. "}, status=status.HTTP_400_BAD_REQUEST)
+    
+    if not user.check_password(password):
+        return Response({"detail": "User password is not correct"}, status=status.HTTP_400_BAD_REQUEST)
+
+    oldTokens = Token.objects.filter(user__id=user.id)
+    for token in oldTokens:
+        token.delete()
+
+    token, _ = Token.objects.get_or_create(user=user)
+
+    return Response({
+        'token': token.key,
+        'user_id': user.pk,
+        'email': user.email,
+        "permissions": {
+            "is_superuser": user.is_superuser,
+            "is_manager": user.role == "manager",
+            "is_cashier": user.role == "cashier",
+            "is_verified": user.is_verified,
+        }
+    })
+
+
+
+# USER LOGOUT VIEW
+@api_view(['POST'])
+@authentication_classes([TokenAuthentication])
+@permission_classes([IsAuthenticated])
+def logout_view(request):
+    user = request.user
+    # Check if the Authorization header is present in the request
+
+    if 'Authorization' in request.headers:
+        # Extract the token from the Authorization header
+        auth_header = request.headers['Authorization']
+        _, token = auth_header.split()  # Assuming the token is separated by a space after "Token"
+        
+        # Check if the token exists in the database
+        try:
+            user_token = Token.objects.get(key=token)
+            user_token.delete()
+        except Token.DoesNotExist:
+            return Response({"detail": "Invalid token."}, status=status.HTTP_401_UNAUTHORIZED)
+
+        token, _ = Token.objects.get_or_create(user=user)
+
+        return Response({"detail": "Logged out successfully."}, status=status.HTTP_200_OK)
+    else:
+        return Response({"detail": "Authentication credentials were not provided."}, status=status.HTTP_401_UNAUTHORIZED)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
